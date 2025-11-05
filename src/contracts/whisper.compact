@@ -1,0 +1,207 @@
+// ═══════════════════════════════════════════════════════════════════════════
+// WhisperChain Smart Contract
+// Written in Midnight Compact Language
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// This contract enables privacy-preserving anonymous messaging with
+// zero-knowledge proof verification on the Midnight blockchain.
+//
+// Key Features:
+// - Anonymous message posting with ZK proof of membership
+// - On-chain storage of IPFS CIDs (encrypted messages stored off-chain)
+// - Public verification without identity disclosure
+// - Immutable gratitude ledger
+//
+// ═══════════════════════════════════════════════════════════════════════════
+
+contract WhisperChain {
+  
+  // ─────────────────────────────────────────────────────────────────────────
+  // State Storage
+  // ─────────────────────────────────────────────────────────────────────────
+  
+  /// Vector of all posted whispers (metadata only)
+  pub whispers: Vec<WhisperRecord>;
+  
+  /// Mapping from proof root to prevent double-posting from same credential
+  pub used_proofs: Map<Hash, bool>;
+  
+  // ─────────────────────────────────────────────────────────────────────────
+  // Data Structures
+  // ─────────────────────────────────────────────────────────────────────────
+  
+  /// Record of a single whisper (stored on-chain)
+  struct WhisperRecord {
+    /// IPFS content identifier for encrypted message
+    ipfs_hash: Hash,
+    
+    /// Root hash of the ZK proof (for verification)
+    proof_root: Hash,
+    
+    /// Block timestamp when whisper was posted
+    timestamp: u64,
+    
+    /// Optional: Merkle root of community membership tree
+    community_root: Hash,
+  }
+  
+  /// Public inputs for ZK proof verification
+  struct ProofPublicInputs {
+    /// Root of the membership Merkle tree
+    root_hash: Hash,
+    
+    /// Nullifier to prevent double-spending of credentials
+    nullifier: Hash,
+    
+    /// Optional: commitment to message hash
+    message_commitment: Hash,
+  }
+  
+  // ─────────────────────────────────────────────────────────────────────────
+  // Public Functions
+  // ─────────────────────────────────────────────────────────────────────────
+  
+  /// Post a new whisper with ZK proof of membership
+  ///
+  /// # Arguments
+  /// * `ipfs_hash` - CID of encrypted message on IPFS
+  /// * `zk_proof` - Zero-knowledge proof of valid membership
+  /// * `pub_inputs` - Public inputs for proof verification
+  ///
+  /// # Security
+  /// - Verifies ZK proof on-chain
+  /// - Checks nullifier hasn't been used (prevents replay)
+  /// - Does not reveal sender identity
+  pub fn post_whisper(
+    ipfs_hash: Hash,
+    zk_proof: Proof,
+    pub_inputs: ProofPublicInputs
+  ) -> Result<()> {
+    
+    // 1. Verify the zero-knowledge proof
+    // This proves the caller is a member of the community without
+    // revealing which member they are
+    require(
+      midnight_verify_proof(zk_proof, pub_inputs) == true,
+      "ZK proof verification failed"
+    );
+    
+    // 2. Check nullifier hasn't been used (prevent double-posting)
+    require(
+      !used_proofs.contains_key(pub_inputs.nullifier),
+      "Proof nullifier already used"
+    );
+    
+    // 3. Mark nullifier as used
+    used_proofs.insert(pub_inputs.nullifier, true);
+    
+    // 4. Create whisper record
+    let record = WhisperRecord {
+      ipfs_hash: ipfs_hash,
+      proof_root: pub_inputs.root_hash,
+      timestamp: block_timestamp(),
+      community_root: pub_inputs.root_hash,
+    };
+    
+    // 5. Store on-chain
+    whispers.push(record);
+    
+    // 6. Emit event
+    emit Event::WhisperPosted {
+      ipfs_hash: ipfs_hash,
+      proof_root: pub_inputs.root_hash,
+      timestamp: block_timestamp(),
+      whisper_index: whispers.len() - 1,
+    };
+    
+    Ok(())
+  }
+  
+  /// Get all whispers (read-only)
+  /// Returns only metadata; messages remain encrypted on IPFS
+  pub fn list_whispers() -> Vec<WhisperRecord> {
+    return whispers.clone();
+  }
+  
+  /// Get whisper count
+  pub fn get_whisper_count() -> u64 {
+    return whispers.len() as u64;
+  }
+  
+  /// Get specific whisper by index
+  pub fn get_whisper(index: u64) -> Option<WhisperRecord> {
+    if index < whispers.len() as u64 {
+      return Some(whispers[index as usize].clone());
+    }
+    None
+  }
+  
+  /// Verify a whisper's proof is valid (for external verification)
+  pub fn verify_whisper_proof(
+    whisper_index: u64,
+    expected_root: Hash
+  ) -> bool {
+    if whisper_index >= whispers.len() as u64 {
+      return false;
+    }
+    
+    let whisper = &whispers[whisper_index as usize];
+    return whisper.proof_root == expected_root;
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Events
+// ─────────────────────────────────────────────────────────────────────────
+
+enum Event {
+  /// Emitted when a new whisper is posted
+  WhisperPosted {
+    ipfs_hash: Hash,
+    proof_root: Hash,
+    timestamp: u64,
+    whisper_index: u64,
+  },
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Midnight Platform Intrinsics (Built-in Functions)
+// ─────────────────────────────────────────────────────────────────────────
+//
+// These are placeholder references to Midnight's built-in ZK verification.
+// In actual Compact implementation, use the correct syntax from Midnight docs.
+
+/// Verify a zero-knowledge proof
+/// Returns true if proof is valid for given public inputs
+fn midnight_verify_proof(proof: Proof, inputs: ProofPublicInputs) -> bool {
+  // Built-in ZK verification primitive
+  // Actual implementation provided by Midnight runtime
+}
+
+/// Get current block timestamp
+fn block_timestamp() -> u64 {
+  // Built-in function to get block time
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Architecture Notes
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Privacy Model:
+// 1. Messages are encrypted client-side before uploading to IPFS
+// 2. Only IPFS CID is stored on-chain (content remains private)
+// 3. ZK proof verifies sender is in community without revealing identity
+// 4. Nullifiers prevent credential reuse while maintaining anonymity
+//
+// Trust Model:
+// - Contract trusts Midnight's ZK verifier
+// - Users trust IPFS for message storage
+// - Community admin manages membership Merkle tree off-chain
+//
+// Future Extensions:
+// - Add reaction counters with ZK proofs
+// - Implement encrypted replies (sender can decrypt via shared secret)
+// - Add reputation scoring using ZK accumulators
+// - Support multiple community roots for different groups
+//
+// ═══════════════════════════════════════════════════════════════════════════
